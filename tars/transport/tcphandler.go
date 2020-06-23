@@ -37,7 +37,7 @@ type tcpHandler struct {
 type connInfo struct {
 	conn      *net.TCPConn
 	idleTime  int64
-	numInvoke int32
+	numInvoke int32 // 进行中，尚未完成的 rpc
 	writeLock sync.Mutex
 }
 
@@ -59,6 +59,7 @@ func (h *tcpHandler) Listen() (err error) {
 	return err
 }
 
+// ywl: 处理一个 request. 函数名起得词不达意
 func (h *tcpHandler) handleConn(connSt *connInfo, pkg []byte) {
 	handler := func() {
 		defer atomic.AddInt32(&connSt.numInvoke, -1)
@@ -68,16 +69,18 @@ func (h *tcpHandler) handleConn(connSt *connInfo, pkg []byte) {
 		current.SetClientPortWithContext(ctx, ipPort[1])
 		current.SetRecvPkgTsFromContext(ctx, time.Now().UnixNano()/1e6)
 
+		// ywl: 任何网络包的类型都是请求，按理应该有一类是 “响应” 才对。看来这套 RPC 只能单向调用，不能双向调用。
 		rsp := h.ts.invoke(ctx, pkg)
 
 		cPacketType, ok := current.GetPacketTypeFromContext(ctx)
 		if !ok {
 			TLOG.Error("Failed to GetPacketTypeFromContext")
 		}
-		if cPacketType == basef.TARSONEWAY {
+		if cPacketType == basef.TARSONEWAY { // ywl: 单向调用，无需回复 ??
 			return
 		}
 
+		// ywl: 常规做法是单独有一个写协程，从 chan 中取数据再 Write();tarsclient 就是这样做的； 现在这种做法，如果要主动推送消息到对端，怎么做呢？
 		connSt.writeLock.Lock()
 		if _, err := connSt.conn.Write(rsp); err != nil {
 			TLOG.Errorf("send pkg to %v failed %v", connSt.conn.RemoteAddr(), err)
@@ -89,10 +92,13 @@ func (h *tcpHandler) handleConn(connSt *connInfo, pkg []byte) {
 	if cfg.MaxInvoke > 0 { // use goroutine pool
 		h.gpool.JobQueue <- handler
 	} else {
+		// ywl: handler 的入口中没有明显看到 defer & recover，而在调用链中的 TarsProtocol.Invoke() 有进行 defer & recover();
+		// 代码应该明显没有风险，而不是这么绕
 		go handler()
 	}
 }
 
+// ywl: 这个函数是阻塞的，所以外部开了协程来调用此函数
 func (h *tcpHandler) Handle() error {
 	cfg := h.conf
 	for {
@@ -105,19 +111,22 @@ func (h *tcpHandler) Handle() error {
 			// set accept timeout
 			h.lis.SetDeadline(time.Now().Add(cfg.AcceptTimeout))
 		}
+		// ywl: 阻塞在这里等待连接
 		conn, err := h.lis.AcceptTCP()
 		if err != nil {
 			if !isNoDataError(err) {
 				TLOG.Errorf("Accept error: %v", err)
 			} else if conn != nil {
-				conn.SetKeepAlive(true)
+				conn.SetKeepAlive(true) // ywl: 两小时发一次的那个吗？  一般不是在应用层实现心跳包的吗？
 			}
 			continue
 		}
+		// ywl: 只见这里加，不见哪里减 ？？！！
 		atomic.AddInt32(&h.ts.numConn, 1)
+		// 为每一个 socket 起一个协程
 		go func(conn *net.TCPConn) {
 			fd, _ := conn.File()
-			key := fmt.Sprintf("%v", fd.Fd())
+			key := fmt.Sprintf("%v", fd.Fd()) // ywl: 用 FD 指针作 key ，我以前一直用递增的唯一 ID 作 key
 			TLOG.Debugf("TCP accept: %s, %d, fd: %s", conn.RemoteAddr(), os.Getpid(), key)
 			conn.SetReadBuffer(cfg.TCPReadBuffer)
 			conn.SetWriteBuffer(cfg.TCPWriteBuffer)
@@ -125,7 +134,7 @@ func (h *tcpHandler) Handle() error {
 
 			cf := &connInfo{conn: conn}
 			h.conns.Store(key, cf)
-			h.recv(cf)
+			h.recv(cf) // ywl: 从这里开始：读取数据，处理，回复数据；(TCP 的全双工退化成 HTTP 那种半双工了。或许这套 RPC 系统需求就是这样的)
 			h.conns.Delete(key)
 		}(conn)
 	}
@@ -145,6 +154,7 @@ func (h *tcpHandler) OnShutdown() {
 }
 
 func (h *tcpHandler) sendCloseMsg() {
+	// ywl: 估计是为了防止 服务端进入 TIME_WAIT 状态，所以发应用层包给 client,让 client 先关闭连接。
 	// send close-package
 	closeMsg := h.ts.svr.GetCloseMsg()
 	h.conns.Range(func(key, val interface{}) bool {
@@ -187,6 +197,7 @@ func (h *tcpHandler) CloseIdles(n int64) bool {
 
 func (h *tcpHandler) recv(connSt *connInfo) {
 	conn := connSt.conn
+	//
 	defer func() {
 		watchInterval := time.Millisecond * 500
 		tk := time.NewTicker(watchInterval)
@@ -216,6 +227,7 @@ func (h *tcpHandler) recv(connSt *connInfo) {
 			conn.SetReadDeadline(time.Now().Add(cfg.ReadTimeout))
 		}
 		connSt.idleTime = time.Now().Unix()
+		// ywl: 大多数时间阻塞在这里
 		n, err = conn.Read(buffer)
 		// TLOG.Debugf("%s closed: %d, read %d, nil buff: %d, err: %v", h.ts.conf.Address, atomic.LoadInt32(&h.ts.isClosed), n, len(currBuffer), err)
 		if err != nil {
@@ -242,10 +254,12 @@ func (h *tcpHandler) recv(connSt *connInfo) {
 				break
 			}
 			if status == PACKAGE_FULL {
+				// ywl: 无需回复的 rpc 就不要加计数了吧？！
 				atomic.AddInt32(&connSt.numInvoke, 1)
 				pkg := make([]byte, pkgLen)
 				copy(pkg, currBuffer[:pkgLen])
 				currBuffer = currBuffer[pkgLen:]
+				//
 				h.handleConn(connSt, pkg)
 				if len(currBuffer) > 0 {
 					continue

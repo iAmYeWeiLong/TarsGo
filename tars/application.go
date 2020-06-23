@@ -254,6 +254,7 @@ func Run() {
 
 	lisDone := &sync.WaitGroup{}
 	for _, obj := range objRunList {
+		// ywl: 启动 http 服务
 		if s, ok := httpSvrs[obj]; ok {
 			lisDone.Add(1)
 			go func(obj string) {
@@ -272,6 +273,7 @@ func Run() {
 				}
 
 				lisDone.Done()
+				// ywl: 阻塞在 Serve()
 				err = s.Serve(ln)
 				if err != nil {
 					if err == http.ErrServerClosed {
@@ -283,7 +285,7 @@ func Run() {
 			}(obj)
 			continue
 		}
-
+		// ywl: 启动 tars 协议的服务
 		s := goSvrs[obj]
 		if s == nil {
 			teerDown(fmt.Errorf("Obj not found %s", obj))
@@ -299,6 +301,7 @@ func Run() {
 			}
 
 			lisDone.Done()
+			// ywl: 阻塞在 Serve()
 			if err := s.Serve(); err != nil {
 				teerDown(fmt.Errorf("server obj for %s failed: %v", obj, err))
 				return

@@ -19,6 +19,7 @@ func AddServantWithContext(v dispatch, f interface{}, obj string) {
 	addServantCommon(v, f, obj, true)
 }
 
+// ywl: 生成服务，并注册服务到内存中
 func addServantCommon(v dispatch, f interface{}, obj string, withContext bool) {
 	objRunList = append(objRunList, obj)
 	cfg, ok := tarsConfig[obj]
@@ -27,12 +28,14 @@ func addServantCommon(v dispatch, f interface{}, obj string, withContext bool) {
 		TLOG.Debug("servant obj name not found:", obj)
 		panic(ok)
 	}
+	// 鸭子类型的玩法。
 	if v, ok := f.(destroyableImp); ok {
 		TLOG.Debugf("add destroyable obj %s", obj)
 		destroyableObjs = append(destroyableObjs, v)
 	}
 	TLOG.Debug("add:", cfg)
 
+	// ywl: 失败！ 用户不能使用自己定义的 TarsProtocol,TarsServer
 	jp := NewTarsProtocol(v, f, withContext)
 	s := transport.NewTarsServer(jp, cfg)
 	goSvrs[obj] = s

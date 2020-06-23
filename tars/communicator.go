@@ -77,6 +77,7 @@ func (c *Communicator) SetLocator(obj string) {
 }
 
 // StringToProxy sets the servant of ProxyPrx p with a string servant
+// 这个函数真绕，莫名地绕
 func (c *Communicator) StringToProxy(servant string, p ProxyPrx) {
 	if servant == "" {
 		panic("empty servant")

@@ -3,6 +3,7 @@ package current
 import "context"
 
 // ctckey is key for tars client current.
+// ywl: 这个值这么魔法 ！！！？？
 var ctcKey = tarsCurrentKey(0x484901)
 
 // ClientCurrent for passing client side info for tars framework.

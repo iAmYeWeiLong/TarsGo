@@ -11,9 +11,13 @@ import (
 // ChMap consistent hash map
 type ChMap struct {
 	lock       *sync.RWMutex
+	// ywl: 虚拟节点数量
 	replicates int
+	// ywl: 哈希环（肯定是要排序的）
 	sortedKeys []uint32
+	// ywl: 虚拟 key 对应的真实 KV
 	hashRing   map[uint32]KV
+	// ywl: 标识 主机 是否加入了 哈希环
 	mapValues  map[string]bool
 }
 

@@ -16,12 +16,18 @@ import (
 var reconnectMsg = "_reconnect_"
 
 // AdapterProxy : Adapter proxy
+// ywl: 拥有一个 tarsclient
+// ywl: 实现了 ClientProtocol 接口
 type AdapterProxy struct {
 	resp            sync.Map
 	point           *endpointf.EndpointF
 	tarsClient      *transport.TarsClient
 	conf            *transport.TarsClientConf
+	// ywl: 看不出存为成员变量的必要性，没有使用的地方。
 	comm            *Communicator
+
+	//proto    model.Protocol // ywl: model.Protocol 更应该是这里的成员变量，而不是 ServantProxy 的成员变量
+	// ywl: 如果 model.Protocol 是自身成员变量，下面这一行持有 ServantProxy 就可以不要了。现在的引用关系有点复杂。
 	obj             *ServantProxy
 	failCount       int32
 	lastFailCount   int32
@@ -55,17 +61,24 @@ func NewAdapterProxy(point *endpointf.EndpointF, comm *Communicator) *AdapterPro
 		DialTimeout:  comm.Client.ClientDialTimeout,
 	}
 	c.conf = conf
+	// ywl: 用户不能使用自定义的 TarsClient
 	c.tarsClient = transport.NewTarsClient(fmt.Sprintf("%s:%d", point.Host, point.Port), c, conf)
 	c.status = true
 	return c
 }
 
 // ParsePackage : Parse packet from bytes
+// ywl: 实现了 ClientProtocol 接口的 ParsePackage()
+// ywl: tarsclient.go 的 connection.recv() 调用到这里
+
 func (c *AdapterProxy) ParsePackage(buff []byte) (int, int) {
 	return c.obj.proto.ParsePackage(buff)
 }
 
 // Recv : Recover read channel when closed for timeout
+// ywl: 实现了 ClientProtocol 接口的 Recv()
+// ywl: 客户端的收包处理函数。在 tarsclient.go 的 connection.recv() 开了协程调用到这里
+// ywl: 因为只支持单向 rpc ,这里就是处理 rpc 的响应。
 func (c *AdapterProxy) Recv(pkg []byte) {
 	defer func() {
 		// TODO readCh has a certain probability to be closed after the load, and we need to recover
@@ -79,17 +92,19 @@ func (c *AdapterProxy) Recv(pkg []byte) {
 		TLOG.Error("decode packet error", err.Error())
 		return
 	}
-	if packet.IRequestId == 0 {
+	if packet.IRequestId == 0 { // ywl: 是特殊的 “消息推送”
 		go c.onPush(packet)
 		return
 	}
+	// ywl: 作为客户端，这个标志是没有意义的吧 ？？？！！
 	if packet.CPacketType == basef.TARSONEWAY {
 		return
 	}
-	chIF, ok := c.resp.Load(packet.IRequestId)
+	chIF, ok := c.resp.Load(packet.IRequestId) // ywl: 请求已经得到回复了，取出 异步结果，准备唤醒正在等待的协程。
 	if ok {
 		ch := chIF.(chan *requestf.ResponsePacket)
 		select {
+		// ywl: 塞入回应的消息体，唤醒阻塞的协程
 		case ch <- packet:
 		default:
 			TLOG.Errorf("response timeout, write channel error, now time :%v, RequestId:%v",
@@ -102,6 +117,7 @@ func (c *AdapterProxy) Recv(pkg []byte) {
 }
 
 // Send : Send packet
+// ywl: 客户端发包时，ServantProxy.doInvoke() 调用到这里
 func (c *AdapterProxy) Send(req *requestf.RequestPacket) error {
 	TLOG.Debug("send req:", req.IRequestId)
 	c.sendAdd()
@@ -188,6 +204,7 @@ func (c *AdapterProxy) checkActive() (firstTime bool, needCheck bool) {
 	return false, false
 }
 
+// ywl: 是特殊的 “消息推送”
 func (c *AdapterProxy) onPush(pkg *requestf.ResponsePacket) {
 	if pkg.SResultDesc == reconnectMsg {
 		TLOG.Infof("reconnect %s:%d", c.point.Host, c.point.Port)

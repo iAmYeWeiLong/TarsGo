@@ -29,6 +29,8 @@ type TarsClient struct {
 	//TODO remove it
 	conn *connection
 
+	// ywl: 就是 AdapterProxy，因为 AdapterProxy 实现了 ClientProtocol 接口
+	// ywl: 但是，为什么不定义为 connection 的成员变量，你自己都没有用过这个 cp
 	cp        ClientProtocol
 	conf      *TarsClientConf
 	sendQueue chan []byte
@@ -64,6 +66,7 @@ func (tc *TarsClient) ReConnect() error {
 }
 
 // Send sends the request to the server as []byte.
+// ywl: 只是把数据放入到发送队列
 func (tc *TarsClient) Send(req []byte) error {
 	if err := tc.ReConnect(); err != nil {
 		return err
@@ -93,6 +96,7 @@ func (tc *TarsClient) Close() {
 	}
 }
 
+// ywl: 发送协程。从 sendQueue 中取数据进行发送
 func (c *connection) send(conn net.Conn, connDone chan bool) {
 	var req []byte
 	t := time.NewTicker(time.Second)
@@ -124,7 +128,7 @@ func (c *connection) send(conn net.Conn, connDone chan bool) {
 		_, err := conn.Write(req)
 		if err != nil {
 			//TODO add retry time
-			c.tc.sendQueue <- req
+			c.tc.sendQueue <- req // ywl: 直觉，这里做重试是不好的，应该交给上层决定如何处理错误。（在不搞清是什么错误的情况下，重试一般是错的？？）
 			TLOG.Error("send request error:", err)
 			c.close(conn)
 			return
@@ -132,6 +136,7 @@ func (c *connection) send(conn net.Conn, connDone chan bool) {
 	}
 }
 
+// ywl: 接收协程。从 conn 读到请求后再新开协程进行处理
 func (c *connection) recv(conn net.Conn, connDone chan bool) {
 	defer func() {
 		connDone <- true
@@ -174,7 +179,7 @@ func (c *connection) recv(conn net.Conn, connDone chan bool) {
 				pkg := make([]byte, pkgLen)
 				copy(pkg, currBuffer[0:pkgLen])
 				currBuffer = currBuffer[pkgLen:]
-				go c.tc.cp.Recv(pkg)
+				go c.tc.cp.Recv(pkg) // ywl: 这里没有用协程池哦！！！！服务端却用了协程池
 				if len(currBuffer) > 0 {
 					continue
 				}

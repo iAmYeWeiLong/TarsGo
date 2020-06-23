@@ -40,11 +40,11 @@ type TarsServerConf struct {
 type TarsServer struct {
 	svr        ServerProtocol
 	conf       *TarsServerConf
-	handle     ServerHandler
+	handle     ServerHandler // 是 tcp handle 或 udp handle
 	lastInvoke time.Time
 	idleTime   time.Time
 	isClosed   int32
-	numInvoke  int32
+	numInvoke  int32 // ywl: 这个变量没有发现哪里使用。
 	numConn    int32
 }
 
@@ -56,6 +56,7 @@ func NewTarsServer(svr ServerProtocol, conf *TarsServerConf) *TarsServer {
 	return ts
 }
 
+// ywl: 这个应该设计成虚函数，让子类可以 护展新的协议
 func (ts *TarsServer) getHandler() (sh ServerHandler) {
 	if ts.conf.Proto == "tcp" {
 		sh = &tcpHandler{conf: ts.conf, ts: ts}
@@ -114,6 +115,7 @@ func (ts *TarsServer) IsZombie(timeout time.Duration) bool {
 	return conf.MaxInvoke != 0 && ts.numInvoke == conf.MaxInvoke && ts.lastInvoke.Add(timeout).Before(time.Now())
 }
 
+// ywl: tcpHandler 或是 udpHandler 收到完整的业务包后 call 到这里
 func (ts *TarsServer) invoke(ctx context.Context, pkg []byte) []byte {
 	cfg := ts.conf
 	var rsp []byte

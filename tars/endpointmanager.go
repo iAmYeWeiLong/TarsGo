@@ -34,6 +34,7 @@ var (
 	gManagerInitOnce sync.Once
 )
 
+// ywl: 单例
 type globalManager struct {
 	eps                 map[string]*tarsEndpointManager
 	mlock               *sync.Mutex
@@ -52,6 +53,7 @@ func initOnceGManager(refreshInterval int, checkStatusInterval int) {
 }
 
 // GetManager return a endpoint manager from global endpoint manager
+// ywl: 对外接口，可能生成新的 EndpointManager(会顺便惰性生成 globalManager 单例)
 func GetManager(comm *Communicator, objName string) EndpointManager {
 	//taf
 	initOnceGManager(comm.Client.RefreshEndpointInterval, comm.Client.CheckStatusInterval)
@@ -65,14 +67,16 @@ func GetManager(comm *Communicator, objName string) EndpointManager {
 	g.mlock.Unlock()
 
 	TLOG.Debug("Create endpoint manager for ", objName)
+	// ywl: 不能定制自己的 EndpointManager !!
 	em := newTarsEndpointManager(objName, comm) // avoid dead lock
 	g.mlock.Lock()
+	// ywl: 再次检查
 	if v, ok := g.eps[key]; ok {
 		g.mlock.Unlock()
 		return v
 	}
 	g.eps[key] = em
-	err := em.doFresh()
+	err := em.doFresh() // ywl: 为什么不判断是不是 直接寻址再调用，反而是进去 doFresh() 再作判断 ！！！？？？
 	// if fresh is error,we should get it from cache
 	if err != nil {
 		for _, cache := range appCache.ObjCaches {
@@ -96,6 +100,7 @@ func GetManager(comm *Communicator, objName string) EndpointManager {
 	return em
 }
 
+// ywl: 协程函数; 处理间接寻址
 func (g *globalManager) checkEpStatus() {
 	loop := time.NewTicker(time.Duration(g.checkStatusInterval) * time.Millisecond)
 	for range loop.C {
@@ -112,6 +117,8 @@ func (g *globalManager) checkEpStatus() {
 		}
 	}
 }
+
+// ywl: 协程函数
 func (g *globalManager) updateEndpoints() {
 	loop := time.NewTicker(time.Duration(g.refreshInterval) * time.Millisecond)
 	for range loop.C {
@@ -151,6 +158,7 @@ func (g *globalManager) updateEndpoints() {
 	}
 }
 
+// ywl: 隐式实现了 EndpointManager 接口
 // tarsEndpointManager is a struct which contains endpoint information.
 type tarsEndpointManager struct {
 	objName     string // name only, no ip list
@@ -160,16 +168,19 @@ type tarsEndpointManager struct {
 
 	epList      *sync.Map
 	epLock      *sync.Mutex
-	activeEp    []endpoint.Endpoint
+	activeEp    []endpoint.Endpoint // ywl: 可以配置多个服务端
 	pos         int32
 	activeEpf   []endpointf.EndpointF
+	// ywl: 没有作用，用于比较差异而已
 	inactiveEpf []endpointf.EndpointF
+	// ywl: 完全没有作用！！！！
 	aliveCheck  chan endpointf.EndpointF
 
 	checkAdapterList *sync.Map
 	checkAdapter     chan *AdapterProxy
 
 	activeEpHashMap *consistenthash.ChMap
+	// ywl: 竟然有一把专门的锁用于 fresh
 	freshLock       *sync.Mutex
 	lastInvoke      int64
 	invokeNum       int32
@@ -177,6 +188,7 @@ type tarsEndpointManager struct {
 
 func newTarsEndpointManager(objName string, comm *Communicator) *tarsEndpointManager {
 	if objName == "" {
+		// ywl: 应该用 panic() ，现返回一个 nil 外部调用又不检查返回值 ！！！？？？
 		return nil
 	}
 	e := &tarsEndpointManager{}
@@ -186,11 +198,12 @@ func newTarsEndpointManager(objName string, comm *Communicator) *tarsEndpointMan
 	e.epLock = &sync.Mutex{}
 	e.checkAdapterList = &sync.Map{}
 	pos := strings.Index(objName, "@")
+	// ywl: 直接寻址模式
 	if pos > 0 {
 		//[direct]
-		e.objName = objName[0:pos]
+		e.objName = objName[0:pos] // ywl: 类似这种格式 TestApp.HelloGo.SayHelloObj
 		endpoints := objName[pos+1:]
-		e.directproxy = true
+		e.directproxy = true // ywl: 直接寻址
 		ends := strings.Split(endpoints, ":")
 		eps := make([]endpoint.Endpoint, len(ends))
 		for i, end := range ends {
@@ -208,6 +221,7 @@ func newTarsEndpointManager(objName string, comm *Communicator) *tarsEndpointMan
 		TLOG.Debug("proxy mode:", objName)
 		e.objName = objName
 		e.directproxy = false
+		// ywl: 忽略第 2 个参数是不对的。至少要 panic()
 		obj, _ := e.comm.GetProperty("locator")
 		e.locator = new(queryf.QueryF)
 		TLOG.Debug("string to proxy locator ", obj)
@@ -228,11 +242,13 @@ func (e *tarsEndpointManager) GetAllEndpoint() []*endpoint.Endpoint {
 	return out
 }
 
+// ywl: 只对间接寻址的检查。注意，另外一类有同名方法。
 func (e *tarsEndpointManager) checkStatus() {
 	//only in active epf need to check.
 	for _, ef := range e.activeEpf {
 		ep := endpoint.Tars2endpoint(ef)
 		if v, ok := e.epList.Load(ep.Key); ok {
+			// ywl: 如果间接寻址的才进这个函数，那么直接寻址的 AdapterProxy 岂不是不检查 Active ？！主控服务器肯定是直接寻址的啊！也不检查 ？？！！
 			firstTime, needCheck := v.(*AdapterProxy).checkActive()
 			if !firstTime && !needCheck {
 				continue
@@ -266,7 +282,9 @@ func (e *tarsEndpointManager) checkStatus() {
 func (e *tarsEndpointManager) addAliveEp(ep endpoint.Endpoint) {
 	e.epLock.Lock()
 	sortedEps := e.activeEp[:]
+	// ywl: 就不怕越增越多吗 ？？？
 	sortedEps = append(sortedEps, ep)
+	// ywl: 为什么要排序啊 ？？！！
 	sort.Slice(sortedEps, func(i int, j int) bool {
 		return crc32.ChecksumIEEE([]byte(sortedEps[i].Key)) < crc32.ChecksumIEEE([]byte(sortedEps[i].Key))
 	})
@@ -276,6 +294,8 @@ func (e *tarsEndpointManager) addAliveEp(ep endpoint.Endpoint) {
 }
 
 // SelectAdapterProxy returns the selected adapter.
+// ywl: 选择一个 服务器发送 rpc (因为可以有多个同质的服务器提供相同的服务)
+// ywl: 这里并没有检查 AdapterProxy 的内部状态
 func (e *tarsEndpointManager) SelectAdapterProxy(msg *Message) (*AdapterProxy, bool) {
 	e.epLock.Lock()
 	eps := e.activeEp[:]
@@ -311,7 +331,7 @@ func (e *tarsEndpointManager) SelectAdapterProxy(msg *Message) (*AdapterProxy, b
 			var index int
 			if msg.isHash && msg.hashType == ModHash {
 				index = int(msg.hashCode) % len(eps)
-			} else {
+			} else { // ywl: 轮流
 				e.pos = (e.pos + 1) % int32(len(eps))
 				index = int(e.pos)
 			}
@@ -340,10 +360,12 @@ func (e *tarsEndpointManager) SelectAdapterProxy(msg *Message) (*AdapterProxy, b
 	return adp, false
 }
 
+// ywl: 对间接寻址的
 func (e *tarsEndpointManager) doFresh() error {
 	if e.directproxy {
 		return nil
 	}
+	// ywl: findAndSetObj 函数里面不上锁，在外部来上锁，有点怪
 	e.freshLock.Lock()
 	defer e.freshLock.Unlock()
 	err := e.findAndSetObj(e.locator)
@@ -359,6 +381,7 @@ func (e *tarsEndpointManager) postInvoke() {
 	atomic.AddInt32(&e.invokeNum, -1)
 }
 
+// ywl: 对于间接寻址的：向主控服务器获取最新的节点信息。
 func (e *tarsEndpointManager) findAndSetObj(q *queryf.QueryF) error {
 	activeEp := make([]endpointf.EndpointF, 0)
 	inactiveEp := make([]endpointf.EndpointF, 0)
@@ -429,6 +452,7 @@ func (e *tarsEndpointManager) findAndSetObj(q *queryf.QueryF) error {
 	})
 
 	//delete active endpoint which status is false
+	// ywl: 不相信主控服务器发过来的，还需根据历史状态二次检查一次
 	sortedEps := make([]endpoint.Endpoint, 0)
 	for _, ep := range newEps {
 		if v, ok := e.epList.Load(ep.Key); ok {
@@ -442,6 +466,7 @@ func (e *tarsEndpointManager) findAndSetObj(q *queryf.QueryF) error {
 	}
 
 	//make endponit slice sorted
+	// ywl: 为什么要排序啊 ？？！！
 	sort.Slice(sortedEps, func(i int, j int) bool {
 		return crc32.ChecksumIEEE([]byte(sortedEps[i].Key)) < crc32.ChecksumIEEE([]byte(sortedEps[i].Key))
 	})
@@ -451,6 +476,7 @@ func (e *tarsEndpointManager) findAndSetObj(q *queryf.QueryF) error {
 		chmap.Add(e)
 	}
 
+	// ywl: 注意，这里并没有重置 epList
 	e.epLock.Lock()
 	e.activeEpf = activeEp
 	e.inactiveEpf = inactiveEp

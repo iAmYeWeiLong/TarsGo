@@ -19,9 +19,9 @@ type dispatch interface {
 
 // TarsProtocol is struct for dispatch with tars protocol.
 type TarsProtocol struct {
-	dispatcher       dispatch
-	serverImp        interface{}
-	withContext      bool
+	dispatcher  dispatch
+	serverImp   interface{}
+	withContext bool
 }
 
 // NewTarsProtocol return a TarsProtocol with dipatcher and implement interface.
@@ -32,6 +32,7 @@ func NewTarsProtocol(dispatcher dispatch, imp interface{}, withContext bool) *Ta
 }
 
 // Invoke puts the request as []byte and call the dispather, and then return the response as []byte.
+// ywl: tcpHandler 或是 udpHandler 收到完整的业务包后 call 到 TarsServer.invoke(), 进一步 call 到这里
 func (s *TarsProtocol) Invoke(ctx context.Context, req []byte) (rsp []byte) {
 	defer CheckPanic()
 	reqPackage := requestf.RequestPacket{}
@@ -74,6 +75,7 @@ func (s *TarsProtocol) Invoke(ctx context.Context, req []byte) (rsp []byte) {
 				TLOG.Error("Set request context in context fail!")
 			}
 		}
+		// ywl: rpc 分发，调用到自动生成的代码那里，并进一步分发到业务处理函数。
 		if allFilters.sf != nil {
 			err = allFilters.sf(ctx, s.dispatcher.Dispatch, s.serverImp, &reqPackage, &rspPackage, s.withContext)
 		} else {

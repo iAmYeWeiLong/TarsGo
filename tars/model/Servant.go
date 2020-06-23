@@ -19,7 +19,10 @@ type Servant interface {
 }
 
 type Protocol interface {
+	// ywl: 加上包头 4 byte 表示业务包的长度
 	RequestPack(*requestf.RequestPacket) ([]byte, error)
+	// ywl: 从字节流中反序列化出 ResponsePacket 消息
 	ResponseUnpack([]byte) (*requestf.ResponsePacket, error)
+	// ywl: 检查有没有收到一个完整的业务包。处理 “粘包” 问题
 	ParsePackage([]byte) (int, int)
 }
