@@ -35,7 +35,7 @@ func addServantCommon(v dispatch, f interface{}, obj string, withContext bool) {
 	}
 	TLOG.Debug("add:", cfg)
 
-	// ywl: 失败！ 用户不能使用自己定义的 TarsProtocol,TarsServer
+	// ywl: 用户不能使用自己定义的 TarsProtocol,TarsServer
 	jp := NewTarsProtocol(v, f, withContext)
 	s := transport.NewTarsServer(jp, cfg)
 	goSvrs[obj] = s
