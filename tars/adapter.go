@@ -167,6 +167,7 @@ func (c *AdapterProxy) reset() {
 	c.status = true
 }
 
+// ywl: firstTime 是否失效且应该删除, needCheck 重连成功了，可用了。名字取得着急！
 func (c *AdapterProxy) checkActive() (firstTime bool, needCheck bool) {
 	if c.closed {
 		return false, false

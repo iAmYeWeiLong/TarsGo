@@ -308,6 +308,7 @@ func (e *tarsEndpointManager) SelectAdapterProxy(msg *Message) (*AdapterProxy, b
 		return nil, false
 	}
 	select {
+	// ywl: 优先使用重连之后的 adapter ,算是一个优化 ？？
 	case adp := <-e.checkAdapter:
 		TLOG.Errorf("SelectAdapterProxy|check adapter, ep: %+v", adp.GetPoint())
 		e.checkAdapterList.Delete(endpoint.Tars2endpoint(*adp.GetPoint()).Key)
