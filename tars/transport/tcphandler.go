@@ -195,6 +195,7 @@ func (h *tcpHandler) CloseIdles(n int64) bool {
 	return allClosed
 }
 
+// ywl: 上面的 socket 的协程处理函数调用到这里
 func (h *tcpHandler) recv(connSt *connInfo) {
 	conn := connSt.conn
 	//
